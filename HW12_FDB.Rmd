@@ -1,0 +1,526 @@
+---
+title: "HW12 FDB"
+author: "nomin-nomio"
+date: "2025-12-19"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+## 0. Installation (optional)
+
+Run this chunk only if you need to install packages. It is set to `eval = FALSE` so it will not run during rendering.
+
+```{r install-packages, eval=FALSE}
+install.packages("readxl")
+install.packages("tidyverse") # Only run once
+install.packages("writexl")
+install.packages("shiny")
+install.packages("remotes")
+remotes::install_github("posit-dev/publisher")
+# devtools if needed
+if (!requireNamespace("devtools", quietly = TRUE)) {
+  install.packages("devtools")
+}
+```
+
+## 1. Load libraries
+
+```{r libraries}
+library(tidyverse)
+library(readxl)
+library(writexl)
+library(shiny)
+library(lubridate)
+library(tidyquant)
+library(scales)
+library(stringr)
+# other optional libs used in the original
+library(packrat)
+library(rsconnect)
+library(knitr)
+```
+
+## 2. Data import
+
+Paths are relative to the working directory. Adjust if needed.
+
+```{r data-import}
+bikes_tbl <- read_excel("./bikes.xlsx")
+bikeshops_tbl <- read_excel("./bikeshops.xlsx")
+orderlines_tbl <- read_excel("./orderlines.xlsx")
+
+# Examine data
+bikes_tbl
+head(bikes_tbl)
+
+# Import csv file
+bike_orderlines_tbl <- read_csv("./bike_orderlines.csv")
+```
+
+## 3. Joining data
+
+```{r joins}
+orderlines_bikes_tbl <- left_join(orderlines_tbl, bikes_tbl, by = c("product.id" = "bike.id"))
+
+bike_orderlines_bikeshops_joined <- left_join(orderlines_bikes_tbl, bikeshops_tbl, 
+                                              by = c('customer.id' = 'bikeshop.id'))
+
+# Or using pipes (the script uses this pattern later)
+bike_orderlines_bikeshops_joined <- left_join(orderlines_tbl, bikes_tbl, by = c("product.id" = "bike.id")) %>% 
+  left_join(bikeshops_tbl, by = c("customer.id" = "bikeshop.id"))
+```
+
+## 4. Wrangling
+
+Decompose description and location, create total price, clean names, and save RDS.
+
+```{r wrangling}
+bike_orderlines_wrangled_tbl <- bike_orderlines_bikeshops_joined %>% 
+  separate(description, 
+           into = c('category.1', 'category.2', 'frame.material'), 
+           sep  = ' - ') %>% 
+  separate(location, 
+           into = c('city', 'state'), 
+           sep  = ', ',
+           remove = FALSE) %>%
+  mutate(total.price = price * quantity) %>% 
+  # Reorganize columns                                  
+  select(-...1, -location) %>% 
+  # Reorder columns                                  
+  select(contains('date'), contains('id'), 
+         contains('order'), 
+         quantity, price, total.price, 
+         everything()) %>% 
+  # Rename columns
+  rename(order_date = order.date) %>%
+  set_names(names(.) %>% str_replace_all("\\.", "_"))
+
+# save the file as RDS
+saveRDS(bike_orderlines_wrangled_tbl, './bike_orderlines.rds')
+```
+
+## 5. dplyr / tidyr examples (analysis and exploration)
+
+Small examples showing pull(), select_if(), arrange(), filter(), slice(), distinct(), mutate(), ntile(), case_when().
+
+```{r dplyr-examples}
+# pull() vs. select()
+bike_orderlines_wrangled_tbl %>% 
+  pull(total_price) %>% 
+  mean()
+
+# select_if
+bike_orderlines_wrangled_tbl %>% 
+  select_if(is.numeric)
+
+# arrange() and desc()
+bikes_tbl %>% 
+  select(model, price) %>% 
+  arrange(desc(price))
+
+# filter()  
+bikes_tbl %>% 
+  select(model, price) %>% 
+  filter(price > mean(price))
+
+bikes_tbl %>% 
+  select(model, price) %>% 
+  filter((price > 5000) & (price < 10000)) %>%    
+  arrange(desc(price))
+
+bikes_tbl %>% 
+  select(model, price) %>% 
+  filter(price > 6000, 
+         model %>% str_detect("Supersix"))
+
+# Filtering using %in%
+bike_orderlines_wrangled_tbl %>% 
+  filter(category_2 %in% c("Over Mountain", "Trail", "Endurance Road"))
+```
+
+```{r more-examples}
+# slice()
+bikes_tbl %>% 
+  arrange(desc(price)) %>% 
+  slice((nrow(.)-4):nrow(.))
+
+# distinct()
+bike_orderlines_wrangled_tbl %>% 
+  distinct(category_1, category_2)
+
+# mutate()
+bike_orderlines_wrangled_tbl %>% 
+  mutate(total_price_log = log(total_price)) %>% 
+  mutate(total_price_sqrt = total_price^0.5)
+
+# Binning with ntile()
+bike_orderlines_wrangled_tbl %>% 
+  mutate(total_price_binned = ntile(total_price, 3)) 
+
+# case_when()
+bike_orderlines_wrangled_tbl %>% 
+  mutate(total_price_binned = ntile(total_price, 3)) %>% 
+  mutate(total_price_binned2 = case_when(
+    total_price > quantile(total_price, 0.75) ~ "High",
+    total_price > quantile(total_price, 0.25) ~ "Medium", 
+    TRUE ~ "Low"
+  ))
+```
+
+## 6. Grouping and summarizing
+
+```{r grouping}
+bike_orderlines_wrangled_tbl %>% 
+  summarise(revenue = sum(total_price))
+
+bike_orderlines_wrangled_tbl %>% 
+  group_by(category_1) %>% 
+  summarise(revenue = sum(total_price)) %>% 
+  ungroup() %>% 
+  arrange(desc(revenue))
+
+bike_orderlines_wrangled_tbl %>%  
+  group_by(category_1, category_2, frame_material) %>% 
+  summarise(revenue = sum(total_price)) %>% 
+  ungroup() %>% 
+  arrange(desc(revenue))
+```
+
+## 7. Questions & quick answers
+
+Q1: What are the unique categories of products?
+
+```{r unique-categories}
+bike_orderlines_wrangled_tbl %>% distinct(category_1)
+bike_orderlines_wrangled_tbl %>% distinct(category_2)
+bike_orderlines_wrangled_tbl %>% distinct(frame_material)
+```
+
+Q2: Which product categories have the largest sales?
+
+```{r sales-by-category1}
+bike_orderlines_wrangled_tbl %>% 
+  select(category_1, total_price) %>% 
+  group_by(category_1) %>% 
+  summarise(sales = sum(total_price)) %>%
+  ungroup() %>% 
+  rename(`Primary Category` = category_1, 
+         Sales = sales) %>% 
+  # format dollars
+  mutate(Sales1 = Sales %>% scales::dollar())
+```
+
+## 8. Time series aggregation and changes
+
+```{r timeseries}
+# Generate total sales by year (ensure order_date is a proper date)
+str(bike_orderlines_wrangled_tbl)
+
+bike_sales_y <- bike_orderlines_wrangled_tbl %>%
+  select(order_date, total_price) %>% 
+  mutate(order_date = ymd(order_date)) %>% 
+  mutate(year = year(order_date)) %>% 
+  group_by(year) %>% 
+  summarise(sales = sum(total_price)) %>% 
+  ungroup()
+
+# Monthly aggregation
+bike_sales_m <- bike_orderlines_wrangled_tbl %>% 
+  select(order_date, total_price) %>% 
+  mutate(order_date = ymd(order_date)) %>% 
+  mutate(year_month = floor_date(order_date, unit = "month")) %>%
+  group_by(year_month) %>% 
+  summarise(sales = sum(total_price))
+```
+
+The original script defines a helper to calculate percent differences; keep that as a reusable function.
+
+```{r pct-diff-fn}
+calculate_pct_diff <- function(data){
+  data %>%
+    mutate(sales_lag_1 = lag(sales, n = 1)) %>% 
+    mutate(sales_lag_1 = case_when(
+      is.na(sales_lag_1) ~ sales,
+      TRUE ~ sales_lag_1
+    )) %>% 
+    mutate(diff_1 = sales - sales_lag_1) %>% 
+    mutate(pct_diff_1 = diff_1 / sales_lag_1) %>% 
+    mutate(pct_diff_1_chr = scales::percent(pct_diff_1))
+}
+
+calculate_pct_diff(bike_sales_m)
+```
+
+## 9. Visualization examples
+
+Example: total sales by year.
+
+```{r plot-sales-by-year, fig.height=4, fig.width=7}
+bike_sales_y %>% 
+  ggplot(aes(x = year, y = sales, color = sales)) +
+  geom_point(size = 5) + 
+  geom_line(linewidth = 2) + 
+  geom_smooth(method =  "lm", formula = 'y ~ x', se = FALSE) +
+  expand_limits(y = c(0, 20e6)) + 
+  scale_colour_continuous(low = "red", high = "black", 
+                          labels = scales::dollar_format(scale = 1/1e6, suffix = "M")) +
+  scale_y_continuous(labels = scales::dollar_format(scale = 1/1e6, suffix = "M")) + 
+  labs(
+    title    = "Revenue",
+    subtitle = "Sales are trending up and to the right!",
+    x        = "year", 
+    y        = "Sales (Millions)",
+    color    = "Rev ($M)",
+    caption  = "Total sales from 2011 to 2015"
+  )
+```
+
+Bar plot: revenue by category_2.
+
+```{r plot-revenue-by-category2, fig.height=5, fig.width=7}
+revenue_by_category2_tbl <- bike_orderlines_wrangled_tbl %>% 
+  select(category_2, total_price) %>% 
+  group_by(category_2) %>% 
+  summarise(revenue = sum(total_price)) %>% 
+  ungroup()
+
+revenue_by_category2_tbl %>% 
+  mutate(category_2 = category_2 %>% as_factor() %>% fct_reorder(desc(revenue))) %>% 
+  ggplot(aes(category_2, revenue)) +
+  geom_col(fill = "blue")+
+  coord_flip()
+```
+
+Scatter plot: order value.
+
+```{r scatter-order-value, fig.height=4, fig.width=7}
+order_value_tbl <- bike_orderlines_wrangled_tbl %>% 
+  select(order_id, order_line, total_price, quantity) %>% 
+  group_by(order_id) %>% 
+  summarize(
+    total_quantity = sum(quantity),
+    total_price    = sum(total_price)
+  ) %>% 
+  ungroup()
+
+order_value_tbl %>% 
+  ggplot(aes(x = total_quantity, y = total_price)) +
+  geom_point(alpha = 0.5, size = 2)
+```
+
+Histograms, density, boxplots and heatmaps are preserved below.
+
+```{r hist-density-box-heat, fig.height=6, fig.width=8}
+# Histogram of prices
+bike_orderlines_wrangled_tbl %>% 
+  distinct(model, price) %>% 
+  ggplot(aes(price)) +
+  geom_histogram(bins = 30, fill = "blue", color = "white")
+
+# Density by frame material
+bike_orderlines_wrangled_tbl %>% 
+  distinct(price, model, frame_material) %>% 
+  ggplot(aes(price, fill = frame_material)) +
+  geom_density(alpha = 0.5)+
+  scale_fill_tq() + 
+  theme_tq()
+
+# Boxplot: unit price by category_2
+unit_price_by_cat2_tbl <- bike_orderlines_wrangled_tbl %>% 
+  select(category_2, model, price) %>% 
+  distinct() %>% 
+  mutate(category_2 = as_factor(category_2) %>% fct_reorder(price))
+
+unit_price_by_cat2_tbl %>% 
+  ggplot(aes(category_2, price)) + 
+  geom_boxplot() + 
+  coord_flip() +
+  theme_tq()
+```
+
+Heatmap of purchasing habits:
+
+```{r heatmap-purchasing, fig.height=6, fig.width=10}
+pct_sales_by_customer_tbl <- bike_orderlines_wrangled_tbl %>% 
+  select(bikeshop_name, category_1, category_2, quantity) %>% 
+  group_by(bikeshop_name, category_1, category_2) %>% 
+  summarise(total_qty = sum(quantity)) %>% 
+  ungroup() %>% 
+  group_by(bikeshop_name) %>% 
+  mutate(pct = total_qty / sum(total_qty)) %>% 
+  ungroup() %>% 
+  mutate(bikeshop_name  = as.factor(bikeshop_name) %>% fct_rev()) %>% 
+  mutate(bikeshop_name_num = as.numeric(bikeshop_name))
+
+pct_sales_by_customer_tbl %>% 
+  ggplot(aes(category_2, bikeshop_name)) +
+  geom_tile(aes(fill = pct)) + 
+  geom_text(aes(label = scales::percent(pct)), size = 3)+
+  scale_fill_gradient(low = "white", high = "black") + 
+  facet_wrap(~ category_1) + 
+  labs(
+    title = "Heatmap of purchasing habits", 
+    x     = "Bike type (category 2)", 
+    y     = "Customer"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## 10. String manipulation and text features
+
+Examples of str_detect, str_c, str_glue, and separation.
+
+```{r text-manipulation}
+bikes_tbl %>% 
+  select(model) %>% 
+  mutate(supersix = model %>% str_detect("Supersix") %>% as.numeric()) %>% 
+  mutate(black    = model %>% str_detect("Black") %>% as.numeric())
+
+order_id <- 1
+order_line <- 1
+str_c("Order Line: ", order_id, ".", order_line)
+
+str_glue("Order Line: {order_id}.{order_line}")
+
+bike_orderlines_tbl %>% 
+  select(bikeshop_name, order_id, order_line) %>% 
+  mutate(purchase_statement = str_glue(
+    "Order Line: {order_id}.{order_line} sent to Customer: {str_to_upper(bikeshop_name)}"
+  ) %>% as.character())
+```
+
+## 11. Feature engineering: model separation
+
+This section preserves the function from your script that cleans and decomposes `model` into base and tier features.
+
+```{r feature-engineering}
+test <- bikes_tbl %>% select(model) %>% 
+  mutate(model = case_when(
+    model == "CAAD Disc Ultegra" ~ "CAAD12 Disc Ultegra", 
+    model == "Supersix Evo Hi-Mod Utegra" ~ "Supersix Evo Hi-Mod Ultegra",
+    model == "Syapse Carbon Tiagra" ~ "Synapse Carbon Tiagra", 
+    TRUE ~ model)
+  ) %>% 
+  separate(col = model, 
+           into = str_c("model_", 1:7), 
+           sep = " ", 
+           remove = FALSE, 
+           fill = "right"
+  ) %>% 
+  mutate(model_base = case_when(
+    str_detect(str_to_lower(model_1), "supersix") ~ str_c(model_1, model_2, sep = " "),
+    str_detect(str_to_lower(model_1), "beast") ~ str_c(model_1, model_2, model_3, model_4, sep = " "),
+    str_detect(str_to_lower(model_1), "bad") ~ str_c(model_1, model_2, sep = " "), 
+    str_detect(str_to_lower(model_1), "fat") ~ str_c(model_1, model_2, sep = " "), 
+    str_detect(str_to_lower(model_1), "29") ~ str_c(model_1, model_2, sep = " "),
+    TRUE ~ model_1
+  )) %>% 
+  mutate(model_tier = model %>% str_replace(model_base, replacement = "") %>% str_trim()) %>% 
+  select(-matches("model_[0-9]")) %>% 
+  mutate(black  = model_tier %>% str_to_lower() %>% str_detect("black") %>% as.numeric(),
+         red    = model_tier %>% str_to_lower() %>% str_detect("red") %>% as.numeric(),
+         hi_mod = model_tier %>% str_to_lower() %>% str_detect("hi_mod") %>% as.numeric(),
+         team   = model_tier %>% str_to_lower() %>% str_detect("team") %>% as.numeric(),
+         ultegra = model_tier %>% str_to_lower() %>% str_detect("ultegra") %>% as.numeric(),
+         dura_ace = model_tier %>% str_to_lower() %>% str_detect("dura_ace") %>% as.numeric(),
+         disc    = model_tier %>% str_to_lower() %>% str_detect("disc") %>% as.numeric())
+```
+
+Create the reusable function.
+
+```{r separate-bike-model-fn}
+separate_bike_model <- function(data, append = TRUE) {
+  if (!append){
+    data <- data %>% select(model)
+  }
+  
+  output_tbl <- data %>% select(model) %>% 
+    mutate(model = case_when(
+      model == "CAAD Disc Ultegra" ~ "CAAD12 Disc Ultegra", 
+      model == "Supersix Evo Hi-Mod Utegra" ~ "Supersix Evo Hi-Mod Ultegra",
+      model == "Syapse Carbon Tiagra" ~ "Synapse Carbon Tiagra", 
+      TRUE ~ model)
+    ) %>% 
+    separate(col = model, 
+             into = str_c("model_", 1:7), 
+             sep = " ", 
+             remove = FALSE, 
+             fill = "right"
+    ) %>% 
+    mutate(model_base = case_when(
+      str_detect(str_to_lower(model_1), "supersix") ~ str_c(model_1, model_2, sep = " "),
+      str_detect(str_to_lower(model_1), "beast") ~ str_c(model_1, model_2, model_3, model_4, sep = " "),
+      str_detect(str_to_lower(model_1), "bad") ~ str_c(model_1, model_2, sep = " "), 
+      str_detect(str_to_lower(model_1), "fat") ~ str_c(model_1, model_2, sep = " "), 
+      str_detect(str_to_lower(model_1), "29") ~ str_c(model_1, model_2, sep = " "),
+      TRUE ~ model_1
+    )) %>% 
+    mutate(model_tier = model %>% str_replace(model_base, replacement = "") %>% str_trim()) %>% 
+    select(-matches("model_[0-9]")) %>% 
+    mutate(black  = model_tier %>% str_to_lower() %>% str_detect("black") %>% as.numeric(),
+           red    = model_tier %>% str_to_lower() %>% str_detect("red") %>% as.numeric(),
+           hi_mod = model_tier %>% str_to_lower() %>% str_detect("hi_mod") %>% as.numeric(),
+           team   = model_tier %>% str_to_lower() %>% str_detect("team") %>% as.numeric(),
+           ultegra = model_tier %>% str_to_lower() %>% str_detect("ultegra") %>% as.numeric(),
+           dura_ace = model_tier %>% str_to_lower() %>% str_detect("dura_ace") %>% as.numeric(),
+           disc    = model_tier %>% str_to_lower() %>% str_detect("disc") %>% as.numeric())
+  
+  return(output_tbl)
+}
+
+separate_bike_model(bikes_tbl)
+```
+
+## 12. Shiny (minimal)
+
+The original script referenced `ui` but didn't define it. Below is a minimal UI placeholder so `shinyApp(ui, server)` runs when used interactively. Replace with your real UI/server code.
+
+```{r shiny-minimal, eval=FALSE}
+server <- function(input, output, session) {
+  # server logic here
+}
+
+ui <- fluidPage(
+  titlePanel("HW12 FDB Shiny App (placeholder)"),
+  sidebarLayout(
+    sidebarPanel(
+      helpText("Replace with inputs")
+    ),
+    mainPanel(
+      tableOutput("sample")
+    )
+  )
+)
+
+# shinyApp(ui = ui, server = server)  # run interactively, not during render
+```
+
+## 13. Deployment / remotes / publisher (optional)
+
+These lines are included from the original; run them interactively if you need to install publisher or related packages.
+
+```{r deployment, eval=FALSE}
+install.packages("remotes")
+remotes::install_github("posit-dev/publisher")
+
+if (!requireNamespace("remotes", quietly = TRUE)) {
+  install.packages("remotes")
+}
+if (!requireNamespace("devtools", quietly = TRUE)) {
+  install.packages("devtools")
+}
+remotes::install_github("posit-dev/publisher")
+```
+
+## Notes
+
+- I preserved the original analysis structure and code; I wrapped code into chunks and added a minimal Shiny UI placeholder so the Shiny call won't fail if run accidentally.
+- Installation and deployment chunks are set to eval = FALSE by default. Remove that or run them interactively if you want to install packages.
+- Adjust file paths if your working directory differs from where the .Rmd will be rendered.
